@@ -1,0 +1,51 @@
+{
+  "download_folders": {
+    "type": "array",
+    "default": [],
+    "description": "视频下载目录列表",
+    "items": {
+      "type": "string"
+    }
+  },
+  "cookie_file": {
+    "type": "string",
+    "default": "",
+    "description": "yt-dlp cookies 文件路径",
+    "hint": "Path to cookies.txt file for authentication"
+  },
+  "enable_archive": {
+    "type": "bool",
+    "default": true,
+    "description": "启用下载存档"
+  },
+  "video_proxy": {
+    "type": "bool",
+    "default": false,
+    "description": "启用代理"
+  },
+  "video_proxy_url": {
+    "type": "string",
+    "default": "",
+    "description": "代理地址",
+    "hint": "Format: http://host:port or socks5://host:port"
+  },
+  "rclone_upload": {
+    "type": "bool",
+    "default": false,
+    "description": "启用 rclone 上传"
+  },
+  "rclone_server": {
+    "type": "string",
+    "default": "",
+    "description": "rclone 远程名称",
+    "hint": "Remote name configured in rclone"
+  },
+  "rclone_folders": {
+    "type": "array",
+    "default": [],
+    "description": "rclone 上传目录列表",
+    "items": {
+      "type": "string"
+    }
+  }
+}
