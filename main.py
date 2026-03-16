@@ -16,10 +16,10 @@ from astrbot.api import AstrBotConfig, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import File, Record, Video
 from astrbot.api.util import SessionController, session_waiter
-from astrbot.core.utils.path_utils import (
-    get_data_dir,
-    get_plugin_data_dir,
-    get_temp_dir,
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_data_path,
+    get_astrbot_plugin_data_path,
+    get_astrbot_temp_path,
 )
 
 from .downloader import determine_filename, download_file, download_with_yt_dlp
@@ -46,7 +46,7 @@ class Main(star.Star):
         if self._initialized:
             return
 
-        archive_path = get_data_dir() / "archive.txt"
+        archive_path = Path(get_astrbot_data_path(), "archive.txt")
         archive_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._initialized = True
@@ -365,7 +365,7 @@ class Main(star.Star):
         select_path = folders[selected_idx]
 
         if self.config.get("rclone_upload", False):
-            download_folder = get_temp_dir() / "video_downloader"
+            download_folder = Path(get_astrbot_temp_path(), "video_downloader")
         else:
             download_folder = Path(select_path)
         download_folder.mkdir(parents=True, exist_ok=True)
@@ -391,13 +391,12 @@ class Main(star.Star):
         cookie_file_config = self.config.get("cookie_file", [])
         if cookie_file_config and isinstance(cookie_file_config, list):
             cookie_file = str(
-                get_plugin_data_dir("astrbot_plugin_videodownloader")
-                / cookie_file_config[0]
+                Path(get_astrbot_plugin_data_path(), "astrbot_plugin_videodownloader", cookie_file_config[0])
             )
         else:
             cookie_file = ""
         proxy_url = self.config.get("video_proxy_url", "") if use_proxy else ""
-        archive_path = str(get_data_dir() / "archive.txt")
+        archive_path = str(Path(get_astrbot_data_path(), "archive.txt"))
 
         attempt = 0
         downloaded_files: list[str] = []
@@ -469,7 +468,7 @@ class Main(star.Star):
         select_path = folders[selected_idx]
 
         if self.config.get("rclone_upload", False):
-            download_folder = get_temp_dir() / "video_downloader"
+            download_folder = Path(get_astrbot_temp_path(), "video_downloader")
         else:
             download_folder = Path(select_path)
         download_folder.mkdir(parents=True, exist_ok=True)
