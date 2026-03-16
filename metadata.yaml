@@ -1,4 +1,6 @@
-name: 视频下载器
-desc: 使用 yt-dlp 下载视频或音频
+name: astrbot_plugin_videodownloader
+display_name: Video/Audio下载器
+desc: 使用 yt-dlp 下载视频或音频，支持下载完毕后通过rclone上传；配置telegram api server后可以下载超50MB的文件
 author: foreveruand
 version: 1.0.0
+repo: https://github.com/foreveruand/astrbot_plugin_videodownloader

@@ -1,6 +1,6 @@
 {
   "download_folders": {
-    "type": "array",
+    "type": "list",
     "default": [],
     "description": "视频下载目录列表",
     "items": {
@@ -8,15 +8,21 @@
     }
   },
   "cookie_file": {
-    "type": "string",
-    "default": "",
-    "description": "yt-dlp cookies 文件路径",
-    "hint": "Path to cookies.txt file for authentication"
+    "type": "file",
+    "default": [],
+    "file_types": ["txt"],
+    "description": "yt-dlp cookies 文件",
+    "hint": "上传 cookies.txt 文件用于认证"
   },
   "enable_archive": {
     "type": "bool",
     "default": true,
     "description": "启用下载存档"
+  },
+  "video_seperate_folder": {
+    "type": "bool",
+    "default": false,
+    "description": "每个视频单独文件夹"
   },
   "video_proxy": {
     "type": "bool",
@@ -41,7 +47,7 @@
     "hint": "Remote name configured in rclone"
   },
   "rclone_folders": {
-    "type": "array",
+    "type": "list",
     "default": [],
     "description": "rclone 上传目录列表",
     "items": {
