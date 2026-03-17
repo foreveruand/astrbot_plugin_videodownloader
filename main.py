@@ -9,13 +9,16 @@ import asyncio
 import logging
 import os
 import re
+import uuid
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import AstrBotConfig, star
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.message_components import File, Record, Video
 from astrbot.api.util import SessionController, session_waiter
+from astrbot.core.platform.sources.telegram.tg_event import TelegramCallbackQueryEvent
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
     get_astrbot_plugin_data_path,
@@ -40,6 +43,26 @@ class Main(star.Star):
         self.context = context
         self.config = config
         self._initialized = False
+
+    async def _send_stream_updates(
+        self,
+        event: AstrMessageEvent,
+        stream_factory: Callable[[], AsyncGenerator[str, None]],
+    ) -> None:
+        """Send progress updates using editable stream when platform supports it."""
+
+        async def chain_stream():
+            last = ""
+            async for text in stream_factory():
+                if not text or text == last:
+                    continue
+                last = text
+                yield event.make_result().message(text)
+
+        try:
+            await event.send_streaming(chain_stream())
+        except Exception as exc:  # pragma: no cover - platform specific
+            logger.warning(f"Streaming delivery failed: {exc}")
 
     async def initialize(self) -> None:
         """Called when the plugin is activated."""
@@ -139,6 +162,72 @@ class Main(star.Star):
 
         return "\n".join(lines)
 
+    def _send_selection_keyboard(
+        self, event: AstrMessageEvent, session_id: str, selected_idx: int = 0
+    ) -> MessageEventResult:
+        """Build and return inline keyboard for Telegram platform."""
+        folders = self._get_download_folders()
+        state = SESSION_STATE.get(session_id, {})
+        keyboard_session_id = state.get("keyboard_session_id", uuid.uuid4().hex[:8])
+
+        enable_archive = state.get(
+            "enable_archive", self.config.get("enable_archive", True)
+        )
+        use_proxy = state.get("use_proxy", self.config.get("video_proxy", False))
+        separate_folder = state.get(
+            "video_separate_folder",
+            self.config.get("video_seperate_folder", False),
+        )
+
+        keyboard = []
+
+        # Folder selection buttons - one folder per row
+        for idx, folder in enumerate(folders):
+            marker = "✅ " if idx == selected_idx else ""
+            keyboard.append([
+                {
+                    "text": f"{marker}{folder}",
+                    "callback_data": f"vd:{keyboard_session_id}:folder:{idx}",
+                }
+            ])
+
+        # Config toggle row
+        keyboard.append([
+            {
+                "text": f"存档 {'✅' if enable_archive else '⭕'}",
+                "callback_data": f"vd:{keyboard_session_id}:toggle:archive",
+            },
+            {
+                "text": f"代理 {'✅' if use_proxy else '⭕'}",
+                "callback_data": f"vd:{keyboard_session_id}:toggle:proxy",
+            },
+            {
+                "text": f"独立 {'✅' if separate_folder else '⭕'}",
+                "callback_data": f"vd:{keyboard_session_id}:toggle:separate",
+            },
+        ])
+
+        # Action buttons row
+        keyboard.append([
+            {
+                "text": "🎬 视频",
+                "callback_data": f"vd:{keyboard_session_id}:action:video",
+            },
+            {
+                "text": "🎵 音频",
+                "callback_data": f"vd:{keyboard_session_id}:action:audio",
+            },
+            {
+                "text": "❌ 取消",
+                "callback_data": f"vd:{keyboard_session_id}:action:cancel",
+            },
+        ])
+
+        result = MessageEventResult()
+        result.message("请选择下载目录和配置：")
+        result.inline_keyboard(keyboard)
+        return result
+
     def _init_session_state(
         self, session_id: str, default_action: str
     ) -> dict[str, Any]:
@@ -153,6 +242,7 @@ class Main(star.Star):
             "use_proxy": self.config.get("video_proxy", False),
             "video_separate_folder": self.config.get("video_seperate_folder", False),
             "default_action": default_action,
+            "keyboard_session_id": uuid.uuid4().hex[:8],
         }
         SESSION_STATE[session_id] = state
         return state
@@ -200,6 +290,12 @@ class Main(star.Star):
                 "回复 '取消' 退出。"
             )
         else:
+            # Check if platform is Telegram - use inline keyboard
+            if event.get_platform_name() == "telegram":
+                result = self._send_selection_keyboard(event, session_id)
+                event.set_result(result)
+                return
+
             msg = self._build_selection_message(session_id)
             yield event.plain_result(msg)
 
@@ -244,10 +340,17 @@ class Main(star.Star):
                     return
 
                 current_state["stage"] = "select"
-                msg = self._build_selection_message(
-                    session_id, current_state.get("selected_folder_idx", 0)
-                )
-                await reply_event.send(reply_event.plain_result(msg))
+                # Check if platform is Telegram - use inline keyboard
+                if reply_event.get_platform_name() == "telegram":
+                    result = self._send_selection_keyboard(
+                        reply_event, session_id, current_state.get("selected_folder_idx", 0)
+                    )
+                    reply_event.set_result(result)
+                else:
+                    msg = self._build_selection_message(
+                        session_id, current_state.get("selected_folder_idx", 0)
+                    )
+                    await reply_event.send(reply_event.plain_result(msg))
                 return
 
             folders = self._get_download_folders()
@@ -344,6 +447,88 @@ class Main(star.Star):
         async for result in self._start_command(event, "audio"):
             yield result
 
+    @filter.callback_query()
+    async def handle_callback(self, event: TelegramCallbackQueryEvent) -> None:
+        """Handle inline keyboard button callbacks for video downloader."""
+        if not event.data.startswith("vd:"):
+            return
+
+        parts = event.data.split(":")
+        if len(parts) < 4:
+            return
+
+        keyboard_session_id = parts[1]
+        action_type = parts[2]
+        action_value = parts[3]
+
+        # Find session by keyboard_session_id
+        session_id: str | None = None
+        state: dict[str, Any] | None = None
+        for sid, s in SESSION_STATE.items():
+            if s.get("keyboard_session_id") == keyboard_session_id:
+                session_id = sid
+                state = s
+                break
+
+        if not state or not session_id:
+            await event.answer_callback_query(text="会话已过期，请重新开始")
+            return
+
+        folders = self._get_download_folders()
+
+        if action_type == "folder":
+            idx = int(action_value)
+            if 0 <= idx < len(folders):
+                state["selected_folder_idx"] = idx
+                result = self._send_selection_keyboard(event, session_id, idx)
+                event.set_result(result)
+                await event.answer_callback_query(text=f"已选择: {folders[idx]}")
+            else:
+                await event.answer_callback_query(text="无效的目录选择")
+
+        elif action_type == "toggle":
+            if action_value == "archive":
+                state["enable_archive"] = not state.get("enable_archive", True)
+                await event.answer_callback_query(
+                    text=f"存档: {'开' if state['enable_archive'] else '关'}"
+                )
+            elif action_value == "proxy":
+                state["use_proxy"] = not state.get("use_proxy", False)
+                await event.answer_callback_query(
+                    text=f"代理: {'开' if state['use_proxy'] else '关'}"
+                )
+            elif action_value == "separate":
+                state["video_separate_folder"] = not state.get(
+                    "video_separate_folder", False
+                )
+                await event.answer_callback_query(
+                    text=f"独立文件夹: {'开' if state['video_separate_folder'] else '关'}"
+                )
+            # Refresh keyboard
+            result = self._send_selection_keyboard(
+                event, session_id, state.get("selected_folder_idx", 0)
+            )
+            event.set_result(result)
+
+        elif action_type == "action":
+            if action_value == "cancel":
+                SESSION_STATE.pop(session_id, None)
+                await event.answer_callback_query(text="已取消操作")
+                result = MessageEventResult()
+                result.message("❌ 已取消操作")
+                event.set_result(result)
+            else:
+                audio_only = action_value == "audio"
+                if state.get("mode") == "file":
+                    await self._handle_file_download(event, state)
+                else:
+                    url = state.get("url", "")
+                    if not url:
+                        await event.answer_callback_query(text="未找到下载链接")
+                        return
+                    await self._handle_download(event, url, state, audio_only)
+                SESSION_STATE.pop(session_id, None)
+
     async def _handle_download(
         self,
         event: AstrMessageEvent,
@@ -370,8 +555,6 @@ class Main(star.Star):
             download_folder = Path(select_path)
         download_folder.mkdir(parents=True, exist_ok=True)
 
-        await event.send(event.plain_result("⏳ 开始下载..."))
-
         if separate_folder:
             outtmpl = str(
                 download_folder
@@ -391,65 +574,70 @@ class Main(star.Star):
         cookie_file_config = self.config.get("cookie_file", [])
         if cookie_file_config and isinstance(cookie_file_config, list):
             cookie_file = str(
-                Path(get_astrbot_plugin_data_path(), "astrbot_plugin_videodownloader", cookie_file_config[0])
+                Path(
+                    get_astrbot_plugin_data_path(),
+                    "astrbot_plugin_videodownloader",
+                    cookie_file_config[0],
+                )
             )
         else:
             cookie_file = ""
         proxy_url = self.config.get("video_proxy_url", "") if use_proxy else ""
         archive_path = str(Path(get_astrbot_data_path(), "archive.txt"))
 
-        attempt = 0
         downloaded_files: list[str] = []
-        failed = False
+        last_error: str | None = None
 
-        while attempt < MAX_RETRIES:
-            downloaded_files = []
+        async def download_stream() -> AsyncGenerator[str, None]:
+            nonlocal downloaded_files, last_error
+            yield "⏳ 开始下载..."
+            attempt = 0
+            while attempt < MAX_RETRIES:
+                downloaded_files = []
+                failed = False
+                async for state_type, data in download_with_yt_dlp(
+                    url,
+                    outtmpl,
+                    cookie_file,
+                    proxy_url,
+                    audio_only,
+                    enable_archive,
+                    archive_path,
+                ):
+                    if state_type == "progress":
+                        yield f"📥 下载中：{data}"
+                    elif state_type == "save_path":
+                        downloaded_files.append(data)
+                    elif state_type == "failed":
+                        failed = True
+                        last_error = data
+                        yield f"❌ 下载失败：{data}，重试 {attempt + 1}/{MAX_RETRIES}"
+                        break
+                    elif state_type == "success" and not downloaded_files:
+                        yield f"✅ 下载完成：{data}"
+                        break
 
-            async for state_type, data in download_with_yt_dlp(
-                url,
-                outtmpl,
-                cookie_file,
-                proxy_url,
-                audio_only,
-                enable_archive,
-                archive_path,
-            ):
-                if state_type == "progress":
-                    await event.send(event.plain_result(f"📥 下载中：{data}"))
-                elif state_type == "save_path":
-                    downloaded_files.append(data)
-                elif state_type == "failed":
-                    failed = True
-                    await event.send(
-                        event.plain_result(
-                            f"❌ 下载失败：{data}，重试 {attempt + 1}/{MAX_RETRIES}"
-                        )
-                    )
-                    break
-                elif state_type == "success":
-                    if not downloaded_files:
-                        await event.send(event.plain_result(f"✅ 下载完成：{data}"))
-                    break
+                if failed:
+                    attempt += 1
+                    if attempt >= MAX_RETRIES:
+                        yield "❌ 下载失败，已达到最大重试次数"
+                        return
+                    await asyncio.sleep(5)
+                    yield f"⏳ 正在重试（{attempt}/{MAX_RETRIES}）..."
+                    continue
 
-            if failed:
-                attempt += 1
-                await asyncio.sleep(5)
-                continue
+                break
 
-            if downloaded_files:
-                await self._process_downloaded_files(
-                    event, downloaded_files, download_folder, select_path
-                )
-            else:
-                if self.config.get("rclone_upload", False):
-                    await self._handle_rclone_directory_transfer(
-                        event, download_folder, select_path
-                    )
+        await self._send_stream_updates(event, download_stream)
 
-            break
-
-        if attempt >= MAX_RETRIES:
-            await event.send(event.plain_result("❌ 下载失败，已达到最大重试次数"))
+        if downloaded_files:
+            await self._process_downloaded_files(
+                event, downloaded_files, download_folder, select_path
+            )
+        elif self.config.get("rclone_upload", False) and not last_error:
+            await self._handle_rclone_directory_transfer(
+                event, download_folder, select_path
+            )
 
     async def _handle_file_download(
         self, event: AstrMessageEvent, state: dict[str, Any]
@@ -529,21 +717,23 @@ class Main(star.Star):
                     else select_path
                 )
 
-                await event.send(
-                    event.plain_result(
-                        f"✅ 下载完成：{local_path_obj.name}，正在传输..."
-                    )
-                )
+                async def transfer_stream() -> AsyncGenerator[str, None]:
+                    yield f"✅ 下载完成：{local_path_obj.name}，正在传输..."
+                    async for state_type, data in rclone_transfer(
+                        local_path_obj, remote_name, remote_path
+                    ):
+                        if state_type == "progress":
+                            yield f"📤 传输中：{data}"
+                        elif state_type == "success":
+                            results.append(f"✅ {local_path_obj.name}")
+                            yield f"✅ 传输完成：{local_path_obj.name}"
+                            return
+                        elif state_type == "failed":
+                            results.append(f"❌ {local_path_obj.name}: {data}")
+                            yield f"❌ 传输失败：{local_path_obj.name}: {data}"
+                            return
 
-                async for state_type, data in rclone_transfer(
-                    local_path_obj, remote_name, remote_path
-                ):
-                    if state_type == "progress":
-                        await event.send(event.plain_result(f"📤 传输中：{data}"))
-                    elif state_type == "success":
-                        results.append(f"✅ {local_path_obj.name}")
-                    elif state_type == "failed":
-                        results.append(f"❌ {local_path_obj.name}: {data}")
+                await self._send_stream_updates(event, transfer_stream)
             else:
                 results.append(f"✅ {local_path_obj}")
 
@@ -560,14 +750,18 @@ class Main(star.Star):
         """Handle rclone transfer of entire directory."""
         remote_name = self.config.get("rclone_server", "")
 
-        await event.send(event.plain_result("📤 正在传输文件夹..."))
+        async def transfer_stream() -> AsyncGenerator[str, None]:
+            yield "📤 正在传输文件夹..."
+            async for state_type, data in rclone_move_directory(
+                download_folder, remote_name, select_path
+            ):
+                if state_type == "progress":
+                    yield f"📤 传输中：{data}"
+                elif state_type == "success":
+                    yield f"✅ 传输完成：{data}"
+                    return
+                elif state_type == "failed":
+                    yield f"❌ 传输失败：{data}"
+                    return
 
-        async for state_type, data in rclone_move_directory(
-            download_folder, remote_name, select_path
-        ):
-            if state_type == "progress":
-                await event.send(event.plain_result(f"📤 传输中：{data}"))
-            elif state_type == "success":
-                await event.send(event.plain_result(f"✅ 传输完成：{data}"))
-            elif state_type == "failed":
-                await event.send(event.plain_result(f"❌ 传输失败：{data}"))
+        await self._send_stream_updates(event, transfer_stream)
