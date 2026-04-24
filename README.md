@@ -7,6 +7,7 @@ A video/audio downloader plugin for AstrBot using yt-dlp.
 - Download videos from YouTube, Bilibili, Twitter, and many other platforms
 - Audio-only download mode
 - Download progress display
+- Editable Telegram progress updates and throttled progress messages on other platforms
 - Configurable download folders
 - Optional rclone upload support
 - Proxy support

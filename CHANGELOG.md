@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-04-24
+
+### Fixed
+- Fixed rclone progress parsing for carriage-return based progress output.
+- Updated Telegram progress delivery to edit a single progress message.
+- Stopped interactive sessions before long downloads or rclone transfers so completed tasks no longer emit timeout cancellation messages.
+- Throttled progress messages on non-Telegram platforms to reduce message spam.
+
 ## [1.1.0] - 2025-03-17
 
 ### Added

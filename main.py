@@ -33,6 +33,7 @@ logger = logging.getLogger("astrbot")
 SESSION_STATE: dict[str, dict[str, Any]] = {}
 SESSION_TIMEOUT = 300
 MAX_RETRIES = 4
+NON_TELEGRAM_PROGRESS_INTERVAL = 30.0
 
 
 class Main(star.Star):
@@ -48,21 +49,98 @@ class Main(star.Star):
         self,
         event: AstrMessageEvent,
         stream_factory: Callable[[], AsyncGenerator[str, None]],
+        *,
+        throttle_interval: float = NON_TELEGRAM_PROGRESS_INTERVAL,
     ) -> None:
-        """Send progress updates using editable stream when platform supports it."""
+        """Send progress updates, editing Telegram messages and throttling others."""
 
-        async def chain_stream():
-            last = ""
+        if event.get_platform_name() == "telegram":
+            await self._send_telegram_progress_updates(event, stream_factory)
+            return
+
+        last = ""
+        last_sent = ""
+        last_send_time = 0.0
+        pending = ""
+        loop = asyncio.get_running_loop()
+
+        async for text in stream_factory():
+            if not text or text == last:
+                continue
+            last = text
+            pending = text
+            now = loop.time()
+            if now - last_send_time >= throttle_interval:
+                await event.send(event.plain_result(text))
+                last_sent = text
+                last_send_time = now
+
+        if pending and pending != last_sent:
+            await event.send(event.plain_result(pending))
+
+    async def _send_telegram_progress_updates(
+        self,
+        event: AstrMessageEvent,
+        stream_factory: Callable[[], AsyncGenerator[str, None]],
+    ) -> None:
+        """Update a single Telegram progress message when possible."""
+        last = ""
+        last_edit_time = 0.0
+        throttle_interval = 0.6
+        progress_message: Any | None = None
+        loop = asyncio.get_running_loop()
+
+        async def edit_or_send(text: str, *, force: bool = False) -> None:
+            nonlocal progress_message, last_edit_time
+            now = loop.time()
+            if not force and now - last_edit_time < throttle_interval:
+                return
+
+            if hasattr(event, "_edit_message"):
+                await event._edit_message(text)  # noqa: SLF001
+                last_edit_time = loop.time()
+                return
+
+            client = getattr(event, "client", None)
+            if client is None:
+                await event.send(event.plain_result(text))
+                last_edit_time = loop.time()
+                return
+
+            chat_id = event.get_sender_id()
+            message_thread_id = None
+            if event.get_message_type().name == "GROUP_MESSAGE":
+                chat_id = getattr(event.message_obj, "group_id", chat_id)
+            if "#" in str(chat_id):
+                chat_id, message_thread_id = str(chat_id).split("#", 1)
+
+            payload: dict[str, Any] = {"chat_id": chat_id}
+            if message_thread_id:
+                payload["message_thread_id"] = message_thread_id
+
+            try:
+                if progress_message is None:
+                    progress_message = await client.send_message(text=text, **payload)
+                else:
+                    await client.edit_message_text(
+                        text=text,
+                        chat_id=payload["chat_id"],
+                        message_id=progress_message.message_id,
+                    )
+            except Exception as exc:  # pragma: no cover - platform specific
+                logger.warning(f"Telegram progress edit failed: {exc}")
+            last_edit_time = loop.time()
+
+        try:
             async for text in stream_factory():
                 if not text or text == last:
                     continue
                 last = text
-                yield event.make_result().message(text)
-
-        try:
-            await event.send_streaming(chain_stream())
+                await edit_or_send(text)
+            if last:
+                await edit_or_send(last, force=True)
         except Exception as exc:  # pragma: no cover - platform specific
-            logger.warning(f"Streaming delivery failed: {exc}")
+            logger.warning(f"Telegram progress delivery failed: {exc}")
 
     async def initialize(self) -> None:
         """Called when the plugin is activated."""
@@ -184,44 +262,50 @@ class Main(star.Star):
         # Folder selection buttons - one folder per row
         for idx, folder in enumerate(folders):
             marker = "✅ " if idx == selected_idx else ""
-            keyboard.append([
-                {
-                    "text": f"{marker}{folder}",
-                    "callback_data": f"vd:{keyboard_session_id}:folder:{idx}",
-                }
-            ])
+            keyboard.append(
+                [
+                    {
+                        "text": f"{marker}{folder}",
+                        "callback_data": f"vd:{keyboard_session_id}:folder:{idx}",
+                    }
+                ]
+            )
 
         # Config toggle row
-        keyboard.append([
-            {
-                "text": f"存档 {'✅' if enable_archive else '⭕'}",
-                "callback_data": f"vd:{keyboard_session_id}:toggle:archive",
-            },
-            {
-                "text": f"代理 {'✅' if use_proxy else '⭕'}",
-                "callback_data": f"vd:{keyboard_session_id}:toggle:proxy",
-            },
-            {
-                "text": f"独立 {'✅' if separate_folder else '⭕'}",
-                "callback_data": f"vd:{keyboard_session_id}:toggle:separate",
-            },
-        ])
+        keyboard.append(
+            [
+                {
+                    "text": f"存档 {'✅' if enable_archive else '⭕'}",
+                    "callback_data": f"vd:{keyboard_session_id}:toggle:archive",
+                },
+                {
+                    "text": f"代理 {'✅' if use_proxy else '⭕'}",
+                    "callback_data": f"vd:{keyboard_session_id}:toggle:proxy",
+                },
+                {
+                    "text": f"独立 {'✅' if separate_folder else '⭕'}",
+                    "callback_data": f"vd:{keyboard_session_id}:toggle:separate",
+                },
+            ]
+        )
 
         # Action buttons row
-        keyboard.append([
-            {
-                "text": "🎬 视频",
-                "callback_data": f"vd:{keyboard_session_id}:action:video",
-            },
-            {
-                "text": "🎵 音频",
-                "callback_data": f"vd:{keyboard_session_id}:action:audio",
-            },
-            {
-                "text": "❌ 取消",
-                "callback_data": f"vd:{keyboard_session_id}:action:cancel",
-            },
-        ])
+        keyboard.append(
+            [
+                {
+                    "text": "🎬 视频",
+                    "callback_data": f"vd:{keyboard_session_id}:action:video",
+                },
+                {
+                    "text": "🎵 音频",
+                    "callback_data": f"vd:{keyboard_session_id}:action:audio",
+                },
+                {
+                    "text": "❌ 取消",
+                    "callback_data": f"vd:{keyboard_session_id}:action:cancel",
+                },
+            ]
+        )
 
         result = MessageEventResult()
         result.message("请选择下载目录和配置：")
@@ -342,10 +426,14 @@ class Main(star.Star):
                 current_state["stage"] = "select"
                 # Check if platform is Telegram - use inline keyboard
                 if reply_event.get_platform_name() == "telegram":
+                    current_state["keyboard_pending"] = True
                     result = self._send_selection_keyboard(
-                        reply_event, session_id, current_state.get("selected_folder_idx", 0)
+                        reply_event,
+                        session_id,
+                        current_state.get("selected_folder_idx", 0),
                     )
                     reply_event.set_result(result)
+                    controller.stop()
                 else:
                     msg = self._build_selection_message(
                         session_id, current_state.get("selected_folder_idx", 0)
@@ -407,6 +495,7 @@ class Main(star.Star):
                     )
                 audio_only = action == "音频"
 
+                controller.stop()
                 if current_state.get("mode") == "file":
                     await self._handle_file_download(reply_event, current_state)
                 else:
@@ -419,8 +508,6 @@ class Main(star.Star):
                     await self._handle_download(
                         reply_event, url, current_state, audio_only
                     )
-
-                controller.stop()
                 return
 
             await reply_event.send(
@@ -432,7 +519,9 @@ class Main(star.Star):
         except TimeoutError:
             yield event.plain_result("⏰ 等待超时，操作已取消。")
         finally:
-            SESSION_STATE.pop(session_id, None)
+            state = SESSION_STATE.get(session_id)
+            if not state or not state.get("keyboard_pending"):
+                SESSION_STATE.pop(session_id, None)
             event.stop_event()
 
     @filter.command("video")
@@ -518,6 +607,8 @@ class Main(star.Star):
                 result.message("❌ 已取消操作")
                 event.set_result(result)
             else:
+                await event.answer_callback_query(text="任务已开始")
+                state["keyboard_pending"] = False
                 audio_only = action_value == "audio"
                 if state.get("mode") == "file":
                     await self._handle_file_download(event, state)

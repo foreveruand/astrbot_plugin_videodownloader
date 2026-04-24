@@ -22,20 +22,67 @@ def format_rclone_progress(line: str) -> str | None:
     Returns:
         Formatted progress string or None
     """
-    # Match transfer progress like: "  0% / 1.000 GiB, 0 B/s, ETA -"
-    # Or: " 50% / 500.000 MiB, 10.000 MiB/s, ETA 0s"
+    line = " ".join(line.strip().split())
+
+    transferred_pattern = re.compile(
+        r"Transferred:\s*([^,]+?)\s*/\s*([^,]+?),\s*"
+        r"(\d+(?:\.\d+)?)%,\s*([^,]+?/s),\s*ETA\s*(.+)",
+        re.IGNORECASE,
+    )
+    match = transferred_pattern.search(line)
+    if match:
+        done = match.group(1).strip()
+        total = match.group(2).strip()
+        percent = match.group(3)
+        speed = match.group(4).strip()
+        eta = match.group(5).strip()
+        return (
+            f"Transfer: {percent}% | Size: {done} / {total} | "
+            f"Speed: {speed} | ETA: {eta}"
+        )
+
+    # Match per-file progress like: "50% / 500.000 MiB, 10.000 MiB/s, ETA 0s"
     progress_pattern = re.compile(
-        r"\s*(\d+(?:\.\d+)?)%\s*/\s*([\d.]+\s*[KMGT]?i?B),\s*([\d.]+\s*[KMGT]?i?B/s),\s*ETA\s*(.+)"
+        r"\s*(\d+(?:\.\d+)?)%\s*/\s*([^,]+),\s*([^,]+?/s),\s*ETA\s*(.+)"
     )
     match = progress_pattern.search(line)
     if match:
         percent = match.group(1)
-        total = match.group(2)
-        speed = match.group(3)
-        eta = match.group(4)
+        total = match.group(2).strip()
+        speed = match.group(3).strip()
+        eta = match.group(4).strip()
         return f"Transfer: {percent}% | Size: {total} | Speed: {speed} | ETA: {eta}"
 
     return None
+
+
+async def _iter_rclone_output(
+    process: asyncio.subprocess.Process,
+) -> AsyncGenerator[str, None]:
+    """Yield rclone output split by newline or carriage return."""
+    assert process.stdout is not None
+    buffer = ""
+
+    while True:
+        chunk = await process.stdout.read(1024)
+        if not chunk:
+            break
+
+        buffer += chunk.decode("utf-8", errors="replace")
+        while True:
+            separators = [
+                pos for pos in (buffer.find("\n"), buffer.find("\r")) if pos >= 0
+            ]
+            if not separators:
+                break
+            split_at = min(separators)
+            record = buffer[:split_at].strip()
+            buffer = buffer[split_at + 1 :]
+            if record:
+                yield record
+
+    if buffer.strip():
+        yield buffer.strip()
 
 
 async def rclone_transfer(
@@ -67,44 +114,22 @@ async def rclone_transfer(
         local_path,
         remote_full,
         "-P",
+        "--stats-one-line",
         f"--stats={stats_interval}",
     ]
 
     logger.info(f"Starting rclone transfer: {local_path} -> {remote_full}")
 
     process = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
     )
 
-    while True:
-        stdout_task = asyncio.create_task(process.stdout.readline())
-        stderr_task = asyncio.create_task(process.stderr.readline())
-
-        done, pending = await asyncio.wait(
-            {stdout_task, stderr_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-
-        for task in done:
-            output = await task
-            if not output:
-                continue
-
-            decoded = output.decode("utf-8", errors="replace").strip()
-
-            if task is stdout_task:
-                formatted = format_rclone_progress(decoded)
-                if formatted:
-                    yield ("progress", formatted)
-
-            elif task is stderr_task:
-                if decoded and "ERROR" in decoded.upper():
-                    yield ("failed", decoded)
-
-        if process.returncode is not None:
-            break
-
-        for task in pending:
-            task.cancel()
+    async for decoded in _iter_rclone_output(process):
+        formatted = format_rclone_progress(decoded)
+        if formatted:
+            yield ("progress", formatted)
+        elif "ERROR" in decoded.upper():
+            yield ("failed", decoded)
 
     await process.wait()
 
@@ -140,44 +165,22 @@ async def rclone_move_directory(
         local_dir,
         remote_full,
         "-P",
+        "--stats-one-line",
         f"--stats={stats_interval}",
     ]
 
     logger.info(f"Starting rclone directory transfer: {local_dir} -> {remote_full}")
 
     process = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
     )
 
-    while True:
-        stdout_task = asyncio.create_task(process.stdout.readline())
-        stderr_task = asyncio.create_task(process.stderr.readline())
-
-        done, pending = await asyncio.wait(
-            {stdout_task, stderr_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-
-        for task in done:
-            output = await task
-            if not output:
-                continue
-
-            decoded = output.decode("utf-8", errors="replace").strip()
-
-            if task is stdout_task:
-                formatted = format_rclone_progress(decoded)
-                if formatted:
-                    yield ("progress", formatted)
-
-            elif task is stderr_task:
-                if decoded and "ERROR" in decoded.upper():
-                    yield ("failed", decoded)
-
-        if process.returncode is not None:
-            break
-
-        for task in pending:
-            task.cancel()
+    async for decoded in _iter_rclone_output(process):
+        formatted = format_rclone_progress(decoded)
+        if formatted:
+            yield ("progress", formatted)
+        elif "ERROR" in decoded.upper():
+            yield ("failed", decoded)
 
     await process.wait()
 
