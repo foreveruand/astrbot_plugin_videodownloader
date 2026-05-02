@@ -241,12 +241,15 @@ class Main(star.Star):
         return "\n".join(lines)
 
     def _send_selection_keyboard(
-        self, event: AstrMessageEvent, session_id: str, selected_idx: int = 0
+        self, event: AstrMessageEvent, session_id: str, selected_idx: int | None = None
     ) -> MessageEventResult:
         """Build and return inline keyboard for Telegram platform."""
         folders = self._get_download_folders()
         state = SESSION_STATE.get(session_id, {})
         keyboard_session_id = state.get("keyboard_session_id", uuid.uuid4().hex[:8])
+
+        if selected_idx is None:
+            selected_idx = state.get("selected_folder_idx", 0)
 
         enable_archive = state.get(
             "enable_archive", self.config.get("enable_archive", True)
@@ -307,8 +310,27 @@ class Main(star.Star):
             ]
         )
 
+        current_folder = (
+            folders[selected_idx] if 0 <= selected_idx < len(folders) else "-"
+        )
+        default_action = state.get("default_action", "video")
+
         result = MessageEventResult()
-        result.message("请选择下载目录和配置：")
+        result.message(
+            "\n".join(
+                [
+                    "请选择下载目录和配置：",
+                    f"当前目录：{current_folder}",
+                    (
+                        "选项："
+                        f"存档 {'开' if enable_archive else '关'} | "
+                        f"代理 {'开' if use_proxy else '关'} | "
+                        f"独立文件夹 {'开' if separate_folder else '关'} | "
+                        f"默认 {'音频' if default_action == 'audio' else '视频'}"
+                    ),
+                ]
+            )
+        )
         result.inline_keyboard(keyboard)
         return result
 

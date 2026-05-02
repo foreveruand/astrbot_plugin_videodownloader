@@ -78,6 +78,8 @@ After sending a URL, you can:
 6. Reply "音频" to download audio only
 7. Reply "开始" to download using the default mode
 
+On Telegram, the inline keyboard message will refresh the current folder and option summary after each click so the visible selection marker stays in sync with the effective download settings.
+
 ## Supported Platforms
 
 yt-dlp supports 1000+ sites including:

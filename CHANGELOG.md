@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] - 2026-05-02
+
+### Fixed
+- Refreshed the Telegram `/video` and `/audio` inline selection message with the current folder and option summary so button state changes reliably update the visible ✅ marker.
+- Made keyboard rendering read the selected folder index from session state by default to keep the visual selection in sync with callback updates.
+
 ## [1.1.1] - 2026-04-24
 
 ### Fixed
