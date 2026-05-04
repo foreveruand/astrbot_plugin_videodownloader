@@ -1,8 +1,8 @@
 """
-AstrBot Video Downloader Plugin - Download videos and audio using yt-dlp.
+AstrBot Media Downloader Plugin.
 
-This plugin provides video/audio download functionality from various platforms
-using yt-dlp, with optional rclone upload support.
+This plugin provides video, audio, and image download functionality
+with optional rclone upload support.
 """
 
 import asyncio
@@ -25,7 +25,16 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_temp_path,
 )
 
-from .downloader import determine_filename, download_file, download_with_yt_dlp
+from .downloader import (
+    determine_filename,
+    download_file,
+    download_with_gallery_dl,
+    download_with_ktoolbox,
+    download_with_yt_dlp,
+    extract_session_key_from_cookie_file,
+    is_ktoolbox_url,
+    prepare_ktoolbox_env,
+)
 from .rclone import rclone_move_directory, rclone_transfer
 
 logger = logging.getLogger("astrbot")
@@ -37,7 +46,7 @@ NON_TELEGRAM_PROGRESS_INTERVAL = 30.0
 
 
 class Main(star.Star):
-    """Main class for the Video Downloader plugin."""
+    """Main class for the Media Downloader plugin."""
 
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
@@ -151,17 +160,49 @@ class Main(star.Star):
         archive_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._initialized = True
-        logger.info("Video Downloader plugin initialized successfully")
+        logger.info("Media Downloader plugin initialized successfully")
 
     async def terminate(self) -> None:
         """Called when the plugin is disabled or reloaded."""
-        logger.info("Video Downloader plugin terminated")
+        logger.info("Media Downloader plugin terminated")
+
+    def _get_section(self, section_name: str) -> dict[str, Any]:
+        """Return a grouped config section."""
+        section = self.config.get(section_name, {})
+        return section if isinstance(section, dict) else {}
+
+    def _get_common_config(self) -> dict[str, Any]:
+        return self._get_section("common_config")
+
+    def _get_video_config(self) -> dict[str, Any]:
+        return self._get_section("video_config")
+
+    def _get_image_config(self) -> dict[str, Any]:
+        return self._get_section("image_config")
+
+    def _get_rclone_config(self) -> dict[str, Any]:
+        return self._get_section("rclone_config")
+
+    def _get_plugin_upload_path(self, config_key: str) -> str:
+        """Resolve uploaded plugin file path from config."""
+        config_value = self._get_video_config().get(config_key)
+        if config_value is None:
+            config_value = self._get_image_config().get(config_key, [])
+        if config_value and isinstance(config_value, list):
+            return str(
+                Path(
+                    get_astrbot_plugin_data_path(),
+                    "astrbot_plugin_mediadownloader",
+                    config_value[0],
+                )
+            )
+        return ""
 
     def _get_download_folders(self) -> list[str]:
         """Get download folders based on rclone setting."""
-        if self.config.get("rclone_upload", False):
-            return self.config.get("rclone_folders", [])
-        return self.config.get("download_folders", [])
+        if self._get_rclone_config().get("rclone_upload", False):
+            return self._get_rclone_config().get("rclone_folders", [])
+        return self._get_video_config().get("download_folders", [])
 
     def _is_url(self, text: str) -> bool:
         return bool(re.match(r"^https?://", text))
@@ -213,12 +254,14 @@ class Main(star.Star):
 
         state = SESSION_STATE.get(session_id, {})
         enable_archive = state.get(
-            "enable_archive", self.config.get("enable_archive", True)
+            "enable_archive", self._get_common_config().get("enable_archive", True)
         )
-        use_proxy = state.get("use_proxy", self.config.get("video_proxy", False))
+        use_proxy = state.get(
+            "use_proxy", self._get_video_config().get("video_proxy", False)
+        )
         separate_folder = state.get(
             "video_separate_folder",
-            self.config.get("video_seperate_folder", False),
+            self._get_video_config().get("video_seperate_folder", False),
         )
         default_action = state.get("default_action", "video")
 
@@ -252,12 +295,14 @@ class Main(star.Star):
             selected_idx = state.get("selected_folder_idx", 0)
 
         enable_archive = state.get(
-            "enable_archive", self.config.get("enable_archive", True)
+            "enable_archive", self._get_common_config().get("enable_archive", True)
         )
-        use_proxy = state.get("use_proxy", self.config.get("video_proxy", False))
+        use_proxy = state.get(
+            "use_proxy", self._get_video_config().get("video_proxy", False)
+        )
         separate_folder = state.get(
             "video_separate_folder",
-            self.config.get("video_seperate_folder", False),
+            self._get_video_config().get("video_seperate_folder", False),
         )
 
         keyboard = []
@@ -344,9 +389,11 @@ class Main(star.Star):
             "file_urls": [],
             "filename_hint": "",
             "selected_folder_idx": 0,
-            "enable_archive": self.config.get("enable_archive", True),
-            "use_proxy": self.config.get("video_proxy", False),
-            "video_separate_folder": self.config.get("video_seperate_folder", False),
+            "enable_archive": self._get_common_config().get("enable_archive", True),
+            "use_proxy": self._get_video_config().get("video_proxy", False),
+            "video_separate_folder": self._get_video_config().get(
+                "video_seperate_folder", False
+            ),
             "default_action": default_action,
             "keyboard_session_id": uuid.uuid4().hex[:8],
         }
@@ -662,7 +709,7 @@ class Main(star.Star):
 
         select_path = folders[selected_idx]
 
-        if self.config.get("rclone_upload", False):
+        if self._get_rclone_config().get("rclone_upload", False):
             download_folder = Path(get_astrbot_temp_path(), "video_downloader")
         else:
             download_folder = Path(select_path)
@@ -684,18 +731,10 @@ class Main(star.Star):
             )
 
         # Get cookie file path
-        cookie_file_config = self.config.get("cookie_file", [])
-        if cookie_file_config and isinstance(cookie_file_config, list):
-            cookie_file = str(
-                Path(
-                    get_astrbot_plugin_data_path(),
-                    "astrbot_plugin_videodownloader",
-                    cookie_file_config[0],
-                )
-            )
-        else:
-            cookie_file = ""
-        proxy_url = self.config.get("video_proxy_url", "") if use_proxy else ""
+        cookie_file = self._get_plugin_upload_path("cookie_file")
+        proxy_url = (
+            self._get_video_config().get("video_proxy_url", "") if use_proxy else ""
+        )
         archive_path = str(Path(get_astrbot_data_path(), "archive.txt"))
 
         downloaded_files: list[str] = []
@@ -747,7 +786,7 @@ class Main(star.Star):
             await self._process_downloaded_files(
                 event, downloaded_files, download_folder, select_path
             )
-        elif self.config.get("rclone_upload", False) and not last_error:
+        elif self._get_rclone_config().get("rclone_upload", False) and not last_error:
             await self._handle_rclone_directory_transfer(
                 event, download_folder, select_path
             )
@@ -768,7 +807,7 @@ class Main(star.Star):
         selected_idx = state.get("selected_folder_idx", 0)
         select_path = folders[selected_idx]
 
-        if self.config.get("rclone_upload", False):
+        if self._get_rclone_config().get("rclone_upload", False):
             download_folder = Path(get_astrbot_temp_path(), "video_downloader")
         else:
             download_folder = Path(select_path)
@@ -817,13 +856,13 @@ class Main(star.Star):
         for local_path in downloaded_files:
             local_path_obj = Path(local_path).resolve()
 
-            if self.config.get("rclone_upload", False):
+            if self._get_rclone_config().get("rclone_upload", False):
                 try:
                     rel_path = local_path_obj.relative_to(download_folder)
                 except ValueError:
                     rel_path = Path(os.path.relpath(local_path_obj, download_folder))
                 remote_dir = rel_path.parent
-                remote_name = self.config.get("rclone_server", "")
+                remote_name = self._get_rclone_config().get("rclone_server", "")
                 remote_path = (
                     str(Path(select_path) / remote_dir)
                     if str(remote_dir) not in ("", ".")
@@ -861,7 +900,7 @@ class Main(star.Star):
         select_path: str,
     ) -> None:
         """Handle rclone transfer of entire directory."""
-        remote_name = self.config.get("rclone_server", "")
+        remote_name = self._get_rclone_config().get("rclone_server", "")
 
         async def transfer_stream() -> AsyncGenerator[str, None]:
             yield "📤 正在传输文件夹..."
@@ -878,3 +917,136 @@ class Main(star.Star):
                     return
 
         await self._send_stream_updates(event, transfer_stream)
+
+    @filter.command("image")
+    async def image_command(self, event: AstrMessageEvent):
+        """Download images using gallery-dl or ktoolbox."""
+        await self.initialize()
+
+        url = event.message_str.replace("image", "", 1).strip()
+        if not url or not self._is_url(url):
+            yield event.plain_result(
+                "用法：/image <链接>\n"
+                "Kemono 链接会使用 ktoolbox，其他受支持图片站点会使用 gallery-dl。"
+            )
+            return
+
+        await self._handle_image_download(event, url)
+
+    async def _handle_image_download(
+        self,
+        event: AstrMessageEvent,
+        url: str,
+    ) -> None:
+        """Handle gallery-dl or ktoolbox image downloads."""
+        use_rclone = self._get_rclone_config().get("rclone_upload", False)
+        target_path = (
+            self._get_rclone_config().get("image_rclone_folder", "")
+            if use_rclone
+            else self._get_image_config().get("image_download_folder", "")
+        )
+
+        if not target_path:
+            message = "❌ 未配置图片远端目录" if use_rclone else "❌ 未配置图片下载目录"
+            await event.send(event.plain_result(message))
+            return
+
+        temp_root = Path(
+            get_astrbot_temp_path(), "video_downloader_images", uuid.uuid4().hex
+        )
+        download_root = temp_root if use_rclone else Path(target_path)
+        download_root.mkdir(parents=True, exist_ok=True)
+        existing_files = {
+            path.relative_to(download_root)
+            for path in download_root.rglob("*")
+            if path.is_file()
+        }
+
+        if is_ktoolbox_url(url):
+            tool_name = "ktoolbox"
+            config_file = self._get_plugin_upload_path("ktoolbox_config_file")
+            cookie_file = self._get_plugin_upload_path("ktoolbox_cookie_file")
+            session_key = extract_session_key_from_cookie_file(cookie_file)
+            workspace = Path(
+                get_astrbot_temp_path(),
+                "video_downloader_ktoolbox",
+                uuid.uuid4().hex,
+            )
+            prepare_ktoolbox_env(workspace, config_file, session_key)
+
+            def stream_factory() -> AsyncGenerator[str, None]:
+                return self._stream_ktoolbox_download(url, workspace, download_root)
+
+        else:
+            tool_name = "gallery-dl"
+            config_file = self._get_plugin_upload_path("gallery_dl_config_file")
+            cookie_file = self._get_plugin_upload_path("gallery_dl_cookie_file")
+
+            def stream_factory() -> AsyncGenerator[str, None]:
+                return self._stream_gallery_dl_download(
+                    url, download_root, config_file, cookie_file
+                )
+
+        await event.send(event.plain_result(f"🖼️ 使用 {tool_name} 开始下载..."))
+        await self._send_stream_updates(event, stream_factory)
+
+        new_files = {
+            path.relative_to(download_root)
+            for path in download_root.rglob("*")
+            if path.is_file()
+        }
+        if not new_files.difference(existing_files):
+            await event.send(event.plain_result("❌ 未检测到已下载文件"))
+            return
+
+        if use_rclone:
+            await self._handle_rclone_directory_transfer(
+                event, download_root, target_path
+            )
+        else:
+            await event.send(event.plain_result(f"✅ 图片下载完成：{download_root}"))
+
+    async def _stream_gallery_dl_download(
+        self,
+        url: str,
+        download_root: Path,
+        config_file: str,
+        cookie_file: str,
+    ) -> AsyncGenerator[str, None]:
+        archive_path = str(Path(get_astrbot_data_path(), "archive-gallery.txt"))
+        yield "⏳ gallery-dl 开始下载..."
+        async for state_type, data in download_with_gallery_dl(
+            url,
+            download_root,
+            config_file=config_file,
+            cookie_file=cookie_file,
+            enable_archive=self._get_common_config().get("enable_archive", True),
+            archive_path=archive_path,
+        ):
+            if state_type == "progress":
+                yield f"📥 {data}"
+            elif state_type == "failed":
+                yield f"❌ gallery-dl 下载失败：{data}"
+                return
+            elif state_type == "success":
+                yield "✅ gallery-dl 下载完成"
+                return
+
+    async def _stream_ktoolbox_download(
+        self,
+        url: str,
+        workspace: Path,
+        download_root: Path,
+    ) -> AsyncGenerator[str, None]:
+        yield "⏳ ktoolbox 开始下载..."
+        async for state_type, data in download_with_ktoolbox(
+            url, workspace, download_root
+        ):
+            if state_type == "progress":
+                yield f"📥 {data}"
+            elif state_type == "failed":
+                yield f"❌ ktoolbox 下载失败：{data}"
+                return
+            elif state_type == "success":
+                yield "✅ ktoolbox 下载完成"
+                return

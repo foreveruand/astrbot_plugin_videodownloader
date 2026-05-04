@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-05-05
+
+### Changed
+- Grouped plugin settings into second-level config sections for clearer navigation in the admin UI.
+- Split settings into `common_config`, `video_config`, `image_config`, and `rclone_config`.
+
+## [1.2.1] - 2026-05-05
+
+### Changed
+- Renamed the plugin from `astrbot_plugin_videodownloader` to `astrbot_plugin_mediadownloader`.
+- Updated metadata, display name, repository URL, and installation path references to match the new plugin name.
+
+## [1.2.0] - 2026-05-04
+
+### Added
+- Added `/image <url>` for image downloads.
+- Added `gallery-dl` support for general image gallery URLs with dedicated config and cookies file settings.
+- Added `ktoolbox` support for Kemono URLs with dedicated `.env` config upload and cookies-to-session extraction.
+- Added `image_download_folder` and `image_rclone_folder` settings for image download targets.
+- Preserved nested directory structures during image uploads to rclone remotes by transferring the whole downloaded directory tree.
+
 ## [1.1.2] - 2026-05-02
 
 ### Fixed

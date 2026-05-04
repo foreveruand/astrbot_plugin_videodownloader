@@ -5,6 +5,7 @@ This module provides functionality to download videos and audio from various pla
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -12,10 +13,13 @@ import shutil
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
 logger = logging.getLogger("astrbot")
+
+KEMONO_HOSTS = {"kemono.su", "kemono.cr", "kemono.party"}
 
 
 async def download_file(url: str, save_path: Path) -> tuple[bool, float]:
@@ -282,3 +286,173 @@ def determine_filename(text_content: str, file_urls: list[str]) -> str:
             filename += ".file"
 
     return filename
+
+
+def is_ktoolbox_url(url: str) -> bool:
+    """Return whether the URL should be handled by ktoolbox."""
+    hostname = urlparse(url).hostname or ""
+    return hostname.lower() in KEMONO_HOSTS
+
+
+def infer_ktoolbox_command(url: str) -> list[str]:
+    """Infer the appropriate ktoolbox subcommand from the URL."""
+    path = urlparse(url).path
+    if "/post/" in path:
+        return ["ktoolbox", "download-post", url]
+    return ["ktoolbox", "sync-creator", url]
+
+
+def extract_session_key_from_cookie_file(cookie_file: str) -> str:
+    """Extract ktoolbox session key from a cookie export file."""
+    if not cookie_file:
+        return ""
+
+    path = Path(cookie_file)
+    if not path.is_file():
+        return ""
+
+    raw_text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not raw_text:
+        return ""
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        payload = None
+
+    if isinstance(payload, dict):
+        cookie_items = payload.get("cookies")
+        if isinstance(cookie_items, list):
+            for item in cookie_items:
+                if isinstance(item, dict) and item.get("name") == "session":
+                    return str(item.get("value", ""))
+        elif payload.get("name") == "session":
+            return str(payload.get("value", ""))
+
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict) and item.get("name") == "session":
+                return str(item.get("value", ""))
+
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if "\t" in stripped:
+            parts = stripped.split("\t")
+            if len(parts) >= 7 and parts[5] == "session":
+                return parts[6]
+
+        if stripped.startswith("session="):
+            return stripped.split("=", 1)[1]
+
+    return ""
+
+
+async def _stream_process_output(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Run a subprocess and stream stdout/stderr lines."""
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(cwd) if cwd else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+
+    assert process.stdout is not None
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            break
+        decoded = line.decode("utf-8", errors="replace").strip()
+        if decoded:
+            yield ("output", decoded)
+
+    await process.wait()
+    if process.returncode == 0:
+        yield ("success", "")
+    else:
+        yield ("failed", f"Command exited with code {process.returncode}")
+
+
+async def download_with_gallery_dl(
+    link: str,
+    output_dir: Path,
+    config_file: str = "",
+    cookie_file: str = "",
+    proxy_url: str = "",
+    enable_archive: bool = True,
+    archive_path: str = "data/archive-gallery.txt",
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Download images using gallery-dl."""
+    command = [
+        "gallery-dl",
+        "--config-ignore",
+        "-d",
+        str(output_dir),
+        "--no-colors",
+        "--no-input",
+    ]
+
+    if config_file:
+        command.extend(["-c", config_file])
+
+    if cookie_file:
+        command.extend(["-C", cookie_file])
+
+    if proxy_url:
+        command.extend(["--proxy", proxy_url])
+
+    if enable_archive:
+        Path(archive_path).parent.mkdir(parents=True, exist_ok=True)
+        command.extend(["--download-archive", archive_path])
+
+    command.append(link)
+
+    async for state_type, data in _stream_process_output(command):
+        if state_type == "output":
+            yield ("progress", data)
+        else:
+            yield (state_type, data)
+
+
+def prepare_ktoolbox_env(
+    workspace: Path,
+    config_file: str = "",
+    session_key: str = "",
+) -> None:
+    """Prepare the working directory files used by ktoolbox configuration."""
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    env_path = workspace / ".env"
+    lines: list[str] = []
+
+    if config_file:
+        config_text = Path(config_file).read_text(encoding="utf-8", errors="replace")
+        lines.append(config_text.rstrip())
+
+    if session_key:
+        lines.append(f'KTOOLBOX_API__SESSION_KEY="{session_key}"')
+
+    if lines:
+        env_path.write_text("\n".join(line for line in lines if line) + "\n")
+
+
+async def download_with_ktoolbox(
+    link: str,
+    workspace: Path,
+    output_dir: Path,
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Download images using ktoolbox."""
+    command = infer_ktoolbox_command(link)
+    command.append(str(output_dir))
+
+    async for state_type, data in _stream_process_output(command, cwd=workspace):
+        if state_type == "output":
+            yield ("progress", data)
+        else:
+            yield (state_type, data)

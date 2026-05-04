@@ -1,57 +1,121 @@
 {
-  "download_folders": {
-    "type": "list",
-    "default": [],
-    "description": "视频下载目录列表",
+  "common_config": {
+    "description": "通用设置",
+    "type": "object",
     "items": {
-      "type": "string"
+      "enable_archive": {
+        "type": "bool",
+        "default": true,
+        "description": "启用下载存档"
+      }
     }
   },
-  "cookie_file": {
-    "type": "file",
-    "default": [],
-    "file_types": ["txt"],
-    "description": "yt-dlp cookies 文件",
-    "hint": "上传 cookies.txt 文件用于认证"
-  },
-  "enable_archive": {
-    "type": "bool",
-    "default": true,
-    "description": "启用下载存档"
-  },
-  "video_seperate_folder": {
-    "type": "bool",
-    "default": false,
-    "description": "每个视频单独文件夹"
-  },
-  "video_proxy": {
-    "type": "bool",
-    "default": false,
-    "description": "启用代理"
-  },
-  "video_proxy_url": {
-    "type": "string",
-    "default": "",
-    "description": "代理地址",
-    "hint": "Format: http://host:port or socks5://host:port"
-  },
-  "rclone_upload": {
-    "type": "bool",
-    "default": false,
-    "description": "启用 rclone 上传"
-  },
-  "rclone_server": {
-    "type": "string",
-    "default": "",
-    "description": "rclone 远程名称",
-    "hint": "Remote name configured in rclone"
-  },
-  "rclone_folders": {
-    "type": "list",
-    "default": [],
-    "description": "rclone 上传目录列表",
+  "video_config": {
+    "description": "视频 / 音频下载设置",
+    "type": "object",
     "items": {
-      "type": "string"
+      "download_folders": {
+        "type": "list",
+        "default": [],
+        "description": "视频下载目录列表",
+        "items": {
+          "type": "string"
+        }
+      },
+      "cookie_file": {
+        "type": "file",
+        "default": [],
+        "file_types": ["txt"],
+        "description": "yt-dlp cookies 文件",
+        "hint": "上传 cookies.txt 文件用于认证"
+      },
+      "video_seperate_folder": {
+        "type": "bool",
+        "default": false,
+        "description": "每个视频单独文件夹"
+      },
+      "video_proxy": {
+        "type": "bool",
+        "default": false,
+        "description": "启用代理"
+      },
+      "video_proxy_url": {
+        "type": "string",
+        "default": "",
+        "description": "代理地址",
+        "hint": "Format: http://host:port or socks5://host:port"
+      }
+    }
+  },
+  "image_config": {
+    "description": "图片下载设置",
+    "type": "object",
+    "items": {
+      "image_download_folder": {
+        "type": "string",
+        "default": "",
+        "description": "图片下载根目录",
+        "hint": "gallery-dl / ktoolbox 下载到本地时使用的基础目录"
+      },
+      "gallery_dl_config_file": {
+        "type": "file",
+        "default": [],
+        "file_types": ["json", "conf", "yaml", "yml", "toml"],
+        "description": "gallery-dl 配置文件",
+        "hint": "插件会通过 --config 指定该文件"
+      },
+      "gallery_dl_cookie_file": {
+        "type": "file",
+        "default": [],
+        "file_types": ["txt", "json"],
+        "description": "gallery-dl cookies 文件",
+        "hint": "插件会通过 --cookies 指定该文件"
+      },
+      "ktoolbox_config_file": {
+        "type": "file",
+        "default": [],
+        "file_types": ["env", "txt"],
+        "description": "ktoolbox 配置文件",
+        "hint": "上传 .env 或 prod.env 内容，插件会在运行目录中生成 .env"
+      },
+      "ktoolbox_cookie_file": {
+        "type": "file",
+        "default": [],
+        "file_types": ["txt", "json"],
+        "description": "ktoolbox cookies 文件",
+        "hint": "用于提取 session cookie 并写入 KTOOLBOX_API__SESSION_KEY"
+      }
+    }
+  },
+  "rclone_config": {
+    "description": "Rclone 上传设置",
+    "type": "object",
+    "items": {
+      "rclone_upload": {
+        "type": "bool",
+        "default": false,
+        "description": "启用 rclone 上传"
+      },
+      "rclone_server": {
+        "type": "string",
+        "default": "",
+        "description": "rclone 远程名称",
+        "hint": "Remote name configured in rclone"
+      },
+      "rclone_folders": {
+        "type": "list",
+        "default": [],
+        "description": "视频上传目录列表",
+        "items": {
+          "type": "string"
+        }
+      },
+      "image_rclone_folder": {
+        "type": "string",
+        "default": "",
+        "description": "图片 rclone 远端目录",
+        "hint": "启用 rclone 上传时，图片目录树会完整保留到这个远端路径下"
+      }
     }
   }
 }

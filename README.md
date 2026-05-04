@@ -1,11 +1,12 @@
-# AstrBot Video Downloader Plugin
+# AstrBot Media Downloader Plugin
 
-A video/audio downloader plugin for AstrBot using yt-dlp.
+A video/audio/image downloader plugin for AstrBot using yt-dlp, gallery-dl, and ktoolbox.
 
 ## Features
 
 - Download videos from YouTube, Bilibili, Twitter, and many other platforms
 - Audio-only download mode
+- Image download mode for gallery sites and Kemono URLs
 - Download progress display
 - Editable Telegram progress updates and throttled progress messages on other platforms
 - Configurable download folders
@@ -17,10 +18,10 @@ A video/audio downloader plugin for AstrBot using yt-dlp.
 
 ## Installation
 
-1. Place the plugin folder in `data/plugins/astrbot_plugin_videodownloader/`
+1. Place the plugin folder in `data/plugins/astrbot_plugin_mediadownloader/`
 2. Install dependencies:
    ```bash
-   pip install yt-dlp httpx
+  pip install yt-dlp gallery-dl ktoolbox httpx
    ```
 3. Restart AstrBot
 
@@ -28,17 +29,16 @@ A video/audio downloader plugin for AstrBot using yt-dlp.
 
 Configure the plugin in the AstrBot admin panel:
 
-| Configuration | Description |
-|--------------|-------------|
-| `download_folders` | List of directories for saving downloaded videos |
-| `cookie_file` | Path to cookies.txt file for authentication |
-| `enable_archive` | Enable download archive to avoid re-downloading |
-| `video_seperate_folder` | Create a separate folder per video (default setting) |
-| `video_proxy` | Enable proxy for downloads |
-| `video_proxy_url` | Proxy URL (e.g., `http://127.0.0.1:7890`) |
-| `rclone_upload` | Enable rclone upload |
-| `rclone_server` | rclone remote name |
-| `rclone_folders` | List of remote directories for rclone upload |
+The settings are grouped into second-level sections:
+
+- `common_config`
+  Enables shared behaviors such as download archive.
+- `video_config`
+  Contains `yt-dlp` related options like download folders, cookies, proxy, and separate-folder layout.
+- `image_config`
+  Contains local image download path plus `gallery-dl` / `ktoolbox` config and cookies files.
+- `rclone_config`
+  Contains shared upload switch, remote name, video remote folders, and image remote folder.
 
 ## Usage
 
@@ -58,6 +58,18 @@ Example:
 ```
 /audio <url>
 ```
+
+### Image Download
+
+```
+/image <url>
+```
+
+Behavior:
+- Kemono URLs use `ktoolbox`
+- Other supported image/gallery URLs use `gallery-dl`
+- Local mode saves to `image_download_folder`
+- rclone mode downloads to a temp directory and uploads the whole tree to `image_rclone_folder`, preserving nested paths such as `author/platform/...`
 
 ### Telegram File Download
 
@@ -91,9 +103,13 @@ yt-dlp supports 1000+ sites including:
 - Vimeo
 - And many more...
 
+gallery-dl supports a wide range of image gallery sites, while ktoolbox covers Kemono creator/post downloads.
+
 ## Requirements
 
 - yt-dlp (installed system-wide or via pip)
+- gallery-dl
+- ktoolbox
 - FFmpeg (for audio extraction and video merging)
 
 ## License
